@@ -1,0 +1,15 @@
+# Build output
+/build/
+/.xmake/
+
+# Reconstructed / vendored dependencies (not redistributed here).
+# See README "Building" for how to provide these locally.
+/extern/
+
+# Cross-build scratch
+*.bak-crossbuild
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+*.user

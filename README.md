@@ -41,3 +41,39 @@ Toggle between normal third-person and the enhanced first-person view with a hot
 ## )
 - Forward offset for improved head geometry culling
 - INI-based configuration for offsets and toggle key
+
+---
+
+## Building (Linux → Windows cross-compile)
+
+This fork adds an [xmake](https://xmake.io) build that cross-compiles the SFSE
+plugin **from Linux** to a Windows x64 DLL, using `clang-cl` + `lld-link` +
+`llvm-rc` against an [xwin](https://github.com/Jake-Shadle/xwin)/MSVC Windows SDK
+tree (referenced here as `~/.vsxwin`).
+
+```sh
+# Provide the dependencies under extern/ first (see below), then:
+xmake f -p windows -a x64 -m releasedbg --toolchain=clang-cl --sdk=$HOME/.vsxwin -y
+xmake build
+```
+
+Output: `build/windows/x64/releasedbg/ImprovedCameraSF.dll`.
+
+### Dependencies
+
+- `extern/commonlibsf/` (not committed — `extern/` is git-ignored): CommonLibSF
+  (libxse fork, runtime 1.16.244.0) + `commonlib-shared`, built from source.
+- Pulled automatically from xrepo: `glm`, `imgui` (core), `minhook`, `mini` (mINI),
+  plus `spdlog` transitively via `commonlib-shared`.
+
+`modules/detect/tools/find_rc.lua` (included) lets xmake locate an `rc` compiler on Linux.
+
+## Credits
+
+Original mod by **mielu91m** / the IC Team — <https://github.com/mielu91m/ImprovedCameraSF>.
+This repository is a modified fork that adds the Linux cross-compile build system
+above; all mod functionality and design are the original author's work.
+
+## License
+
+Distributed under the Mozilla Public License 2.0 — see [LICENSE](LICENSE).
