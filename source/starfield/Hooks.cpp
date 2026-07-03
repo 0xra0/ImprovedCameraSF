@@ -68,6 +68,17 @@ namespace Patch {
         static RE::NiPoint3 GetCurrentHeadAnchorWorldPosition();
         static RE::NiPoint3 GetHeadMeshCenter(RE::NiAVObject* headMesh);
 
+        // Default eye offset (meters) from the pseudo-FP head anchor to the eye
+        // point. The anchor resolves to the head bone / head-geometry CENTER:
+        // Starfield exposes no "Eye_Target"/"faceBone_C_EyesFat" node, so
+        // FindPreferredEyeNode falls back to the head-mesh center. With a zero
+        // offset the camera sits inside the skull ("camera in head"); push it
+        // forward toward the face and up toward the brow to reach the eyes.
+        // Both stay overridable in [PseudoFP]: forward via fNoseForward /
+        // fForwardOffset, up via fOffsetZ / fUpOffset.
+        constexpr float kDefaultEyeForwardOffset = 0.12f;
+        constexpr float kDefaultEyeUpOffset = 0.20f;  // ~eye level; 0.06 sat at jaw (saw own face)
+
         static const std::string& GetPluginDirIniPath()
         {
             static std::string iniPath;
@@ -539,7 +550,7 @@ namespace Patch {
         {
             outX = GetPluginDirIniFloat("PseudoFP", "fOffsetX", 0.0f);
             outY = GetPluginDirIniFloat("PseudoFP", "fOffsetY", 0.0f);
-            outZ = GetPluginDirIniFloat("PseudoFP", "fOffsetZ", 0.0f);
+            outZ = GetPluginDirIniFloat("PseudoFP", "fOffsetZ", kDefaultEyeUpOffset);
         }
 
         static bool IsUltraRigidPseudoFPEnabled()
@@ -571,7 +582,7 @@ namespace Patch {
 
         static float GetPseudoFPBoneForwardOffset()
         {
-            const float legacyForward = GetPluginDirIniFloat("PseudoFP", "fNoseForward", 0.0f) -
+            const float legacyForward = GetPluginDirIniFloat("PseudoFP", "fNoseForward", kDefaultEyeForwardOffset) -
                                         GetPluginDirIniFloat("PseudoFP", "fOffsetX", 0.0f);
             return GetPluginDirIniFloat("PseudoFP", "fForwardOffset", legacyForward);
         }
@@ -583,7 +594,7 @@ namespace Patch {
 
         static float GetPseudoFPBoneUpOffset()
         {
-            return GetPluginDirIniFloat("PseudoFP", "fUpOffset", GetPluginDirIniFloat("PseudoFP", "fOffsetZ", 0.0f));
+            return GetPluginDirIniFloat("PseudoFP", "fUpOffset", GetPluginDirIniFloat("PseudoFP", "fOffsetZ", kDefaultEyeUpOffset));
         }
 
         static float GetPseudoFPMaxYawRad()
@@ -845,7 +856,7 @@ namespace Patch {
 
         // Nose forward offset: push camera from head center toward the nose,
         // using the head anchor's facing direction (local Y in Gamebryo skeletons)
-        const float noseForward = GetPluginDirIniFloat("PseudoFP", "fNoseForward", 0.0f);
+        const float noseForward = GetPluginDirIniFloat("PseudoFP", "fNoseForward", kDefaultEyeForwardOffset);
         RE::NiPoint3 forwardAxis = {};
         RE::NiPoint3 rightAxis = {};
         GetPseudoFPAxes(player, forwardAxis, rightAxis);
