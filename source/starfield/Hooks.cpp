@@ -35,6 +35,10 @@ namespace Patch {
     static bool g_HasEyeHeight = false;
     static bool g_WasHeadAppCulled = false;
     static bool g_HasSavedHeadCull = false;
+    static float g_SavedHeadScale = 1.0f;
+    static bool g_HasSavedHeadScale = false;
+    static float g_SavedCamNear = -1.0f;   // original NiCamera near plane (<0 = not saved)
+    static bool g_LoggedHeadClipInit = false;
     static RE::NiAVObject* g_HeadMesh = nullptr;
     static RE::NiPoint3 g_HeadAnchorLocalOffset = {};
     static RE::NiPoint3 g_LastValidHeadAnchorWorld = {};
@@ -1230,19 +1234,68 @@ namespace Patch {
     using TPSUpdateFunc = void (*)(void*);
     TPSUpdateFunc origTPSUpdate = nullptr;
 
+    // <windows.h> (pulled in via MinHook) defines legacy `near`/`far` as empty
+    // macros, which would mangle NiFrustum's `.near`/`.far` members below.
+    #undef near
+    #undef far
+
     static void HideHead(bool a_hide)
     {
-        if (!g_HeadMesh) return;
         if (a_hide) {
-            if (!g_HasSavedHeadCull) {
-                g_WasHeadAppCulled = (g_HeadMesh->flags & 1) != 0;
-                g_HasSavedHeadCull = true;
+            // Flag-cull the head node (covers any non-skinned attachment on it).
+            if (g_HeadMesh) {
+                if (!g_HasSavedHeadCull) {
+                    g_WasHeadAppCulled = (g_HeadMesh->flags & 1) != 0;
+                    g_HasSavedHeadCull = true;
+                }
+                g_HeadMesh->flags |= 1;
             }
-            g_HeadMesh->flags |= 1;
+            // Collapse the C_Head bone to ~0. NOTE: the mod author reports (and
+            // Starfield's animation graph confirms) that bone cull/scale is
+            // UNRELIABLE here — the pose is rewritten each frame, so this alone
+            // does not hide the head. Kept as a cheap best-effort; the real work
+            // is the near-clip below.
+            if (g_HeadBone) {
+                if (!g_HasSavedHeadScale) {
+                    g_SavedHeadScale = g_HeadBone->local.scale;
+                    g_HasSavedHeadScale = true;
+                }
+                g_HeadBone->local.scale = 0.0001f;
+            }
+            // PRIMARY head-hide: push the render camera's near-clip plane out so
+            // the head geometry (which sits right in front of / around the camera
+            // at the nose) is clipped away by the projection. This is a pure
+            // frustum change — it works even when the head is part of a single
+            // merged body mesh and is immune to the animation graph resetting
+            // bone transforms, which is why bone tricks fail. Reapplied every
+            // frame; INI-tunable via [PseudoFP] fHeadClipNear / bHideHeadNearClip.
+            if (g_NiCamera) {
+                if (g_SavedCamNear < 0.0f) {
+                    g_SavedCamNear = g_NiCamera->viewFrustum.near;
+                }
+                if (!g_LoggedHeadClipInit) {
+                    g_LoggedHeadClipInit = true;
+                    LogFormatted("HEADCLIP_INIT: original near=%.5f far=%.3f",
+                        g_NiCamera->viewFrustum.near, g_NiCamera->viewFrustum.far);
+                }
+                const bool clipEnabled = GetPluginDirIniFloat("PseudoFP", "bHideHeadNearClip", 1.0f) != 0.0f;
+                const float clipNear = GetPluginDirIniFloat("PseudoFP", "fHeadClipNear", 0.18f);
+                if (clipEnabled && clipNear > 0.0f && g_SavedCamNear >= 0.0f) {
+                    g_NiCamera->viewFrustum.near = (std::max)(clipNear, g_SavedCamNear);
+                }
+            }
         } else {
-            if (g_HasSavedHeadCull && !g_WasHeadAppCulled)
+            if (g_HeadMesh && g_HasSavedHeadCull && !g_WasHeadAppCulled)
                 g_HeadMesh->flags &= ~1ULL;
             g_HasSavedHeadCull = false;
+            if (g_HeadBone && g_HasSavedHeadScale) {
+                g_HeadBone->local.scale = g_SavedHeadScale;
+            }
+            g_HasSavedHeadScale = false;
+            if (g_NiCamera && g_SavedCamNear >= 0.0f) {
+                g_NiCamera->viewFrustum.near = g_SavedCamNear;
+            }
+            g_SavedCamNear = -1.0f;
         }
     }
 
