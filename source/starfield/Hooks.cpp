@@ -18,6 +18,8 @@
 #include <cstdarg>
 #include <cmath>
 #include <algorithm>
+#include <string>
+#include <unordered_map>
 #include <Windows.h>
 
 
@@ -100,9 +102,12 @@ namespace Patch {
             }
 
             if (initialized && !logged) {
+                // Set `logged` BEFORE logging: LogFormatted() re-enters this
+                // function (via VLog -> IsDebugLogEnabled), so leaving it false
+                // until after the call would re-trigger the log every re-entry.
+                logged = true;
                 // Log once so users can confirm they're editing the correct INI file.
                 LogFormatted("INI_PATH: %s", iniPath.c_str());
-                logged = true;
             }
 
             return iniPath;
@@ -526,12 +531,31 @@ namespace Patch {
 
         static float GetPluginDirIniFloat(const char* section, const char* key, float defaultValue)
         {
+            // The pseudo-FP rig queries ~20 INI keys PER FRAME. Reading each from
+            // disk (GetPrivateProfileString re-opens+parses the whole file) every
+            // frame tanks FPS, badly so under Wine — this is the frame-rate drop
+            // seen while pseudo-FP is active. Cache each key and only re-read it
+            // from disk at most ~once per second, so editing the INI still takes
+            // effect within ~1s (or immediately on the next F4 toggle).
+            struct Cached { float value; ULONGLONG stamp; };
+            static std::unordered_map<std::string, Cached> cache = [] {
+                std::unordered_map<std::string, Cached> m;
+                m.reserve(64);  // avoid rehash so concurrent reads stay safe
+                return m;
+            }();
+            const ULONGLONG now = GetTickCount64();
+            std::string k(section);
+            k.push_back('|');
+            k.append(key);
+            if (auto it = cache.find(k); it != cache.end() && (now - it->second.stamp) < 1000ULL) {
+                return it->second.value;
+            }
             const std::string& iniPath = GetPluginDirIniPath();
             char buf[32];
             GetPrivateProfileStringA(section, key, "", buf, sizeof(buf), iniPath.c_str());
-            if (strlen(buf) == 0)
-                return defaultValue;
-            return static_cast<float>(atof(buf));
+            const float result = (strlen(buf) == 0) ? defaultValue : static_cast<float>(atof(buf));
+            cache[k] = { result, now };
+            return result;
         }
 
         static bool GetPluginDirIniBool(const char* section, const char* key, bool defaultValue)
@@ -646,25 +670,58 @@ namespace Patch {
         }
     }
 
+    // Per-frame debug logging (PFPP/ROT/FWDCHECK/CAM_STATE) opens+flushes+closes
+    // the log file on every call — several times per frame while pseudo-FP is
+    // active. That alone drops FPS (worse under Wine) and bloated the log to
+    // multi-MB. Off by default; enable with [Debug] bDebugLog=1 in the INI.
+    static bool IsDebugLogEnabled()
+    {
+        static int cached = -1;
+        if (cached < 0) {
+            const std::string& iniPath = GetPluginDirIniPath();
+            char buf[16];
+            GetPrivateProfileStringA("Debug", "bDebugLog", "0", buf, sizeof(buf), iniPath.c_str());
+            cached = (atoi(buf) != 0) ? 1 : 0;
+        }
+        return cached == 1;
+    }
+
     static void VLog(const char* fmt, va_list args)
     {
-        char* userProfile = nullptr;
-        size_t len = 0;
-        _dupenv_s(&userProfile, &len, "USERPROFILE");
-        std::string path = std::string(userProfile ? userProfile : "") + "\\Documents\\My Games\\Starfield\\SFSE\\ImprovedCameraSF_debug.log";
-        free(userProfile);
-        std::ofstream log(path, std::ios::app);
-        if (log) {
-            time_t t = time(nullptr);
-            struct tm tm;
-            localtime_s(&tm, &t);
-            char buf[64];
-            strftime(buf, sizeof(buf), "%H:%M:%S", &tm);
-            log << "[" << buf << "] ";
-            char msg[512];
-            vsprintf_s(msg, fmt, args);
-            log << msg << std::endl;
+        // Re-entrancy guard. IsDebugLogEnabled() -> GetPluginDirIniPath() itself
+        // calls LogFormatted() (the one-time "INI_PATH" line), which re-enters
+        // VLog(). Because GetPluginDirIniPath()'s `logged` flag and this
+        // function's debug-enabled cache are both set only AFTER their log call,
+        // that re-entry is UNBOUNDED -> stack overflow on the very first VLog,
+        // which hung/crashed the game on load (during Hooks::Setup). Bail out on
+        // any recursive entry so the INI/enabled lookups can complete.
+        static thread_local bool inVLog = false;
+        if (inVLog) {
+            return;
         }
+        inVLog = true;
+
+        if (IsDebugLogEnabled()) {
+            char* userProfile = nullptr;
+            size_t len = 0;
+            _dupenv_s(&userProfile, &len, "USERPROFILE");
+            std::string path = std::string(userProfile ? userProfile : "") + "\\Documents\\My Games\\Starfield\\SFSE\\ImprovedCameraSF_debug.log";
+            free(userProfile);
+            std::ofstream log(path, std::ios::app);
+            if (log) {
+                time_t t = time(nullptr);
+                struct tm tm;
+                localtime_s(&tm, &t);
+                char buf[64];
+                strftime(buf, sizeof(buf), "%H:%M:%S", &tm);
+                log << "[" << buf << "] ";
+                char msg[512];
+                vsprintf_s(msg, fmt, args);
+                log << msg << std::endl;
+            }
+        }
+
+        inVLog = false;
     }
 
     static void LogFormatted(const char* fmt, ...)
